@@ -10,15 +10,22 @@ import uuid
 from datetime import datetime, timezone
 
 import azure.functions as func
+from azure.core.exceptions import HttpResponseError, ServiceRequestError
+from azure.identity import DefaultAzureCredential
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from azure.servicebus.exceptions import ServiceBusAuthenticationError, ServiceBusConnectionError
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration – managed identity (no connection string / SAS key)
 # ---------------------------------------------------------------------------
-_SB_CONNECTION_STRING = os.environ["AZURE_SERVICEBUS_CONNECTION_STRING"]
+_SB_NAMESPACE = os.environ["AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE"]
 _SB_QUEUE_NAME = os.environ["AZURE_SERVICEBUS_QUEUE_NAME"]
+# DefaultAzureCredential picks up the Function App's system-assigned managed
+# identity automatically when running in Azure; falls back to az CLI / env
+# vars for local development.
+_credential = DefaultAzureCredential()
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +112,7 @@ def submit_job(req: func.HttpRequest) -> func.HttpResponse:
     }
 
     try:
-        with ServiceBusClient.from_connection_string(_SB_CONNECTION_STRING) as sb_client:
+        with ServiceBusClient(_SB_NAMESPACE, _credential) as sb_client:
             with sb_client.get_queue_sender(_SB_QUEUE_NAME) as sender:
                 sb_message = ServiceBusMessage(
                     body=json.dumps(message_body),
@@ -113,8 +120,29 @@ def submit_job(req: func.HttpRequest) -> func.HttpResponse:
                     content_type="application/json",
                 )
                 sender.send_messages(sb_message)
+    except ServiceBusAuthenticationError:
+        logging.exception("Authentication failure sending job %s – check managed identity role assignments", job_id)
+        return func.HttpResponse(
+            json.dumps({"error": "Service Bus authentication failed"}),
+            status_code=503,
+            mimetype="application/json",
+        )
+    except (ServiceBusConnectionError, ServiceRequestError):
+        logging.exception("Connection failure sending job %s", job_id)
+        return func.HttpResponse(
+            json.dumps({"error": "Service Bus connection failed – please retry"}),
+            status_code=503,
+            mimetype="application/json",
+        )
+    except HttpResponseError as exc:
+        logging.exception("Service Bus returned an error for job %s: %s", job_id, exc.status_code)
+        return func.HttpResponse(
+            json.dumps({"error": "Service Bus request error", "detail": str(exc)}),
+            status_code=500,
+            mimetype="application/json",
+        )
     except Exception as exc:  # pylint: disable=broad-except
-        logging.exception("Failed to enqueue job %s", job_id)
+        logging.exception("Unexpected failure enqueuing job %s", job_id)
         return func.HttpResponse(
             json.dumps({"error": "Failed to enqueue job", "detail": str(exc)}),
             status_code=500,

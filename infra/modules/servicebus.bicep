@@ -10,7 +10,7 @@ param queueName string = 'cutting-jobs'
 @allowed(['Basic', 'Standard', 'Premium'])
 param sku string = 'Standard'
 
-resource namespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
+resource namespace 'Microsoft.ServiceBus/namespaces@2021-11-01' = {
   name: namespaceName
   location: location
   sku: {
@@ -22,7 +22,7 @@ resource namespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
   }
 }
 
-resource queue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+resource queue 'Microsoft.ServiceBus/namespaces/queues@2021-11-01' = {
   parent: namespace
   name: queueName
   properties: {
@@ -33,11 +33,8 @@ resource queue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
   }
 }
 
-resource authRule 'Microsoft.ServiceBus/namespaces/AuthorizationRules@2022-10-01-preview' existing = {
-  parent: namespace
-  name: 'RootManageSharedAccessKey'
-}
-
 output namespaceName string = namespace.name
+output namespaceId string = namespace.id
+// Fully-qualified hostname used by managed-identity clients (no shared keys exposed)
+output namespaceFqdn string = '${namespace.name}.servicebus.windows.net'
 output queueName string = queue.name
-output connectionString string = authRule.listKeys().primaryConnectionString

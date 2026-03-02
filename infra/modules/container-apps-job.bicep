@@ -1,5 +1,6 @@
 // =============================================================================
 // Container Apps Job module  –  Service Bus triggered cuOpt solver
+// Authentication: system-assigned managed identity (no shared keys / SAS)
 // =============================================================================
 
 param environmentName string
@@ -8,8 +9,8 @@ param location string
 param logAnalyticsWorkspaceId string
 @secure()
 param logAnalyticsWorkspaceKey string
-@secure()
-param serviceBusConnectionString string
+// Fully-qualified Service Bus namespace hostname (no SAS key)
+param serviceBusNamespaceFqdn string
 param serviceBusQueueName string
 param solverImage string
 param stockLengthMm int = 6000
@@ -37,6 +38,10 @@ resource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerAppsJob 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
   location: location
+  // System-assigned managed identity – Service Bus Data Receiver role granted in main.bicep
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     environmentId: containerAppsEnv.id
     configuration: {
@@ -54,16 +59,15 @@ resource containerAppsJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'servicebus-trigger'
               type: 'azure-servicebus'
+              // Managed-identity KEDA trigger: namespace FQDN, no connection string
               metadata: {
                 queueName: serviceBusQueueName
+                namespace: serviceBusNamespaceFqdn
                 messageCount: '1'
               }
-              auth: [
-                {
-                  secretRef: 'servicebus-connection'
-                  triggerParameter: 'connection'
-                }
-              ]
+              // No auth block needed – Container Apps uses the job's system-assigned
+              // managed identity automatically when 'namespace' is set and no
+              // 'connection' key is provided.
             }
           ]
         }
@@ -79,9 +83,10 @@ resource containerAppsJob 'Microsoft.App/jobs@2024-03-01' = {
             memory: '4Gi'
           }
           env: [
+            // Managed-identity Service Bus access – FQDN, no SAS key
             {
-              name: 'AZURE_SERVICEBUS_CONNECTION_STRING'
-              secretRef: 'servicebus-connection'
+              name: 'AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE'
+              value: serviceBusNamespaceFqdn
             }
             {
               name: 'AZURE_SERVICEBUS_QUEUE_NAME'
@@ -101,3 +106,5 @@ resource containerAppsJob 'Microsoft.App/jobs@2024-03-01' = {
 
 output jobName string = containerAppsJob.name
 output environmentName string = containerAppsEnv.name
+// Principal ID for role assignments in main.bicep
+output principalId string = containerAppsJob.identity.principalId

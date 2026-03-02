@@ -41,8 +41,8 @@
   "forwardPorts": [7071],
   "postCreateCommand": "pip install -r src/cuopt-solver/requirements.txt && pip install -r src/azure-function/requirements.txt && pip install -r requirements-dev.txt",
   "remoteEnv": {
-    "AZURE_SERVICEBUS_CONNECTION_STRING": "${localEnv:AZURE_SERVICEBUS_CONNECTION_STRING}",
+    "AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE": "${localEnv:AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE}",
     "AZURE_SERVICEBUS_QUEUE_NAME": "${localEnv:AZURE_SERVICEBUS_QUEUE_NAME}",
-    "STOCK_LENGTH": "${localEnv:STOCK_LENGTH}"
+    "STOCK_LENGTH_MM": "${localEnv:STOCK_LENGTH_MM}"
   }
 }
