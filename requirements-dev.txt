@@ -4,3 +4,8 @@ pytest-cov==6.0.0
 black==24.10.0
 pylint==3.3.3
 python-dotenv==1.0.1
+
+# Azure SDK – required to import and test the function app locally
+azure-functions==1.21.3
+azure-servicebus==7.12.3
+azure-identity==1.19.0
