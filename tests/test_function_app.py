@@ -16,28 +16,15 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-# ---------------------------------------------------------------------------
-# Step 1 – set required env vars before module import
-# ---------------------------------------------------------------------------
 os.environ.setdefault("AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE", "test.servicebus.windows.net")
 os.environ.setdefault("AZURE_SERVICEBUS_QUEUE_NAME", "test-queue")
-
-# ---------------------------------------------------------------------------
-# Step 2 – make the source directory importable
-# ---------------------------------------------------------------------------
+  
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "azure-function"))
 
-# ---------------------------------------------------------------------------
-# Step 3 – patch DefaultAzureCredential *while* importing the module so the
-#           module-level instantiation succeeds without real credentials
-# ---------------------------------------------------------------------------
 with patch("azure.identity.DefaultAzureCredential"):
     import function_app  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_request(body=None):
     """Return a mock HttpRequest whose get_json() returns *body*.
@@ -74,9 +61,9 @@ def _mock_service_bus_client():
     return mock_sb_class, mock_sender
 
 
-# ---------------------------------------------------------------------------
+
 # 1. Health check endpoint
-# ---------------------------------------------------------------------------
+
 
 class TestHealthCheck(unittest.TestCase):
 
@@ -92,9 +79,9 @@ class TestHealthCheck(unittest.TestCase):
         self.assertEqual(body["status"], "healthy")
 
 
-# ---------------------------------------------------------------------------
+
 # 2. Valid job submission
-# ---------------------------------------------------------------------------
+
 
 VALID_PAYLOAD = {
     "stock_length_mm": 6000,
@@ -167,9 +154,9 @@ class TestValidJobSubmission(unittest.TestCase):
         self.assertEqual(sent["stock_length_mm"], 6000)
 
 
-# ---------------------------------------------------------------------------
+
 # 3. Invalid job – negative length
-# ---------------------------------------------------------------------------
+
 
 class TestNegativeLength(unittest.TestCase):
 
@@ -204,9 +191,9 @@ class TestNegativeLength(unittest.TestCase):
         self.assertTrue(any("stock_length_mm" in d for d in body["details"]))
 
 
-# ---------------------------------------------------------------------------
+
 # 4. Missing fields
-# ---------------------------------------------------------------------------
+
 
 class TestMissingFields(unittest.TestCase):
 
@@ -256,9 +243,9 @@ class TestMissingFields(unittest.TestCase):
         self.assertIn("JSON", body["error"])
 
 
-# ---------------------------------------------------------------------------
-# 5. Service Bus error handling (bonus – ensures 503/500 paths are covered)
-# ---------------------------------------------------------------------------
+
+# 5. Service Bus error handling 
+
 
 class TestServiceBusErrors(unittest.TestCase):
 
