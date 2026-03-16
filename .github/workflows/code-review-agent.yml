@@ -1,0 +1,48 @@
+name: Weekly Code Review Agent
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print review to logs without creating a GitHub issue'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install openai PyGithub
+
+      - name: Run code review agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Primary: standard OpenAI-compatible API key.
+          # For GitHub Models set OPENAI_BASE_URL to
+          # https://models.inference.ai.azure.com and use the GitHub token.
+          # For Azure OpenAI set OPENAI_BASE_URL to your deployment endpoint.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
+          OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: python .github/scripts/code_review_agent.py
