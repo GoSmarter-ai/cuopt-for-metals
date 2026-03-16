@@ -28,9 +28,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: .github/scripts/requirements.txt
 
       - name: Install dependencies
-        run: pip install openai PyGithub
+        run: pip install -r .github/scripts/requirements.txt
 
       - name: Run code review agent
         env:
