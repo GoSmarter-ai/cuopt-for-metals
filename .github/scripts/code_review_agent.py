@@ -24,8 +24,9 @@ Optional environment variables
 OPENAI_BASE_URL   – Inference endpoint. Defaults to the GitHub Models
                     endpoint (https://models.inference.ai.azure.com).
                     Override for Azure OpenAI or other compatible APIs.
-OPENAI_MODEL      – Model name. Defaults to gpt-4o.
-OPENAI_MAX_TOKENS – Maximum tokens in the model response. Defaults to 4096.
+OPENAI_MODEL      – Model name. Defaults to gpt-4.1 (code-optimised, 1M
+                    token context window available on GitHub Models).
+OPENAI_MAX_TOKENS – Maximum tokens in the model response. Defaults to 16384.
 OPENAI_TEMPERATURE – Sampling temperature (0.0–2.0). Defaults to 0.4.
 DRY_RUN           – Set to "true" to print the review to stdout instead
                     of creating a GitHub issue (useful for testing).
@@ -51,8 +52,8 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_BASE_URL = (
     os.environ.get("OPENAI_BASE_URL") or "https://models.inference.ai.azure.com"
 )
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-4o"
-OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS") or "4096")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-4.1"
+OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS") or "16384")
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE") or "0.4")
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
@@ -65,10 +66,8 @@ EXCLUDE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", "dist", "build",
 }
-# Maximum characters to include per file (avoid huge payloads)
-MAX_FILE_CHARS = 8_000
-# Maximum total characters across all files sent to the model
-MAX_TOTAL_CHARS = 80_000
+# Binary or non-reviewable file types to explicitly skip
+EXCLUDE_EXTENSIONS = {".pdf"}
 
 # ---------------------------------------------------------------------------
 # System prompt – persona and output format
@@ -145,6 +144,8 @@ def read_repo_files() -> dict[str, str]:
             continue
         if any(part in EXCLUDE_DIRS for part in filepath.parts):
             continue
+        if filepath.suffix.lower() in EXCLUDE_EXTENSIONS:
+            continue
         if filepath.suffix.lower() not in INCLUDE_EXTENSIONS:
             continue
 
@@ -153,19 +154,10 @@ def read_repo_files() -> dict[str, str]:
         except OSError:
             continue
 
-        if len(content) > MAX_FILE_CHARS:
-            content = content[:MAX_FILE_CHARS] + "\n…[truncated – file exceeds limit]"
-
         files[str(filepath)] = content
         total_chars += len(content)
-        if total_chars >= MAX_TOTAL_CHARS:
-            print(
-                f"[agent] Reached total character limit ({MAX_TOTAL_CHARS:,}); "
-                "some files omitted.",
-                file=sys.stderr,
-            )
-            break
 
+    print(f"[agent] Total characters collected: {total_chars:,}", file=sys.stderr)
     return files
 
 
