@@ -17,9 +17,6 @@ from azure.servicebus.exceptions import ServiceBusAuthenticationError, ServiceBu
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
-# ---------------------------------------------------------------------------
-# Configuration – managed identity (no connection string / SAS key)
-# ---------------------------------------------------------------------------
 _SB_NAMESPACE = os.environ["AZURE_SERVICEBUS_FULLY_QUALIFIED_NAMESPACE"]
 _SB_QUEUE_NAME = os.environ["AZURE_SERVICEBUS_QUEUE_NAME"]
 # DefaultAzureCredential picks up the Function App's system-assigned managed
@@ -28,9 +25,6 @@ _SB_QUEUE_NAME = os.environ["AZURE_SERVICEBUS_QUEUE_NAME"]
 _credential = DefaultAzureCredential()
 
 
-# ---------------------------------------------------------------------------
-# Helper – validate payload
-# ---------------------------------------------------------------------------
 def _validate_job(payload: dict) -> list[str]:
     """Return a list of validation errors, or an empty list if payload is valid."""
     errors: list[str] = []
@@ -63,9 +57,6 @@ def _validate_job(payload: dict) -> list[str]:
     return errors
 
 
-# ---------------------------------------------------------------------------
-# HTTP trigger – submit a cutting job
-# ---------------------------------------------------------------------------
 @app.route(route="jobs", methods=["POST"])
 def submit_job(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -164,9 +155,6 @@ def submit_job(req: func.HttpRequest) -> func.HttpResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# HTTP trigger – health check
-# ---------------------------------------------------------------------------
 @app.route(route="health", methods=["GET"])
 def health_check(req: func.HttpRequest) -> func.HttpResponse:  # pylint: disable=unused-argument
     """GET /api/health – liveness check."""
