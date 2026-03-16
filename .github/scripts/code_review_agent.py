@@ -8,17 +8,22 @@ against the plan defined in GitHub issues. Creates a new GitHub issue
 titled ``yyyy-mm-dd code review`` with prioritised findings, rationales,
 and links to further reading.
 
+Uses **GitHub Models** (https://github.com/marketplace/models) for
+inference — no external API key is required. The workflow passes the
+automatically-available ``GITHUB_TOKEN`` as the API key and the GitHub
+Models endpoint as the base URL.
+
 Required environment variables
 -------------------------------
-GITHUB_TOKEN      – GitHub Actions token (issues: write permission)
+GITHUB_TOKEN      – GitHub Actions token (issues: write, models: read)
 GITHUB_REPOSITORY – owner/repo string, injected automatically by Actions
-OPENAI_API_KEY    – API key for the OpenAI-compatible endpoint
+OPENAI_API_KEY    – Set to the GITHUB_TOKEN value in the workflow
 
 Optional environment variables
 -------------------------------
-OPENAI_BASE_URL   – Override the API base URL (e.g. GitHub Models or
-                    Azure OpenAI deployment endpoint). Defaults to the
-                    standard OpenAI API.
+OPENAI_BASE_URL   – Inference endpoint. Defaults to the GitHub Models
+                    endpoint (https://models.inference.ai.azure.com).
+                    Override for Azure OpenAI or other compatible APIs.
 OPENAI_MODEL      – Model name. Defaults to gpt-4o.
 OPENAI_MAX_TOKENS – Maximum tokens in the model response. Defaults to 4096.
 OPENAI_TEMPERATURE – Sampling temperature (0.0–2.0). Defaults to 0.4.
@@ -40,8 +45,12 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+# GitHub Models uses the GITHUB_TOKEN as the bearer token / API key.
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
+# Default to GitHub Models endpoint; can be overridden for other providers.
+OPENAI_BASE_URL = (
+    os.environ.get("OPENAI_BASE_URL") or "https://models.inference.ai.azure.com"
+)
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-4o"
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS") or "4096")
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE") or "0.4")
@@ -197,12 +206,8 @@ def ensure_label(repo, name: str, color: str = "0075ca", description: str = "") 
 
 
 def generate_review(files: dict[str, str], issues: list[dict]) -> str:
-    """Call the OpenAI-compatible API and return the Markdown review."""
-    client_kwargs: dict = {"api_key": OPENAI_API_KEY}
-    if OPENAI_BASE_URL:
-        client_kwargs["base_url"] = OPENAI_BASE_URL
-
-    client = OpenAI(**client_kwargs)
+    """Call the GitHub Models API and return the Markdown review."""
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     issues_json = json.dumps(issues, indent=2, ensure_ascii=False)

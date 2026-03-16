@@ -14,6 +14,7 @@ on:
 permissions:
   contents: read
   issues: write
+  models: read
 
 jobs:
   code-review:
@@ -34,12 +35,10 @@ jobs:
       - name: Run code review agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Primary: standard OpenAI-compatible API key.
-          # For GitHub Models set OPENAI_BASE_URL to
-          # https://models.inference.ai.azure.com and use the GitHub token.
-          # For Azure OpenAI set OPENAI_BASE_URL to your deployment endpoint.
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          # GitHub Models uses the GITHUB_TOKEN as the API key.
+          # No separate secret is required – the token is always available.
+          OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_BASE_URL: https://models.inference.ai.azure.com
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
           OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE }}
