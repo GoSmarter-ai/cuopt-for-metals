@@ -38,7 +38,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from github import Github, GithubException
+from github import Auth, Github, GithubException
 from github.Issue import Issue
 from openai import OpenAI
 
@@ -336,7 +336,7 @@ def main() -> None:
     files = read_repo_files()
     print(f"[agent] Collected {len(files)} files.", file=sys.stderr)
 
-    gh = Github(GITHUB_TOKEN)
+    gh = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = gh.get_repo(GITHUB_REPOSITORY)
 
     print("[agent] Fetching open GitHub issues …", file=sys.stderr)
