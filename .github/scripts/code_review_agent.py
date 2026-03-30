@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Weekly Code Review Agent
-========================
+Weekly Code Review Agent — Agentic approach
+============================================
 Runs every Monday via GitHub Actions. Acts as a senior data science and
 AI cloud architect mentor, reviewing repository code and project progress
 against the plan defined in GitHub issues. Creates a new GitHub issue
@@ -9,9 +9,9 @@ titled ``yyyy-mm-dd code review`` with prioritised findings, rationales,
 and links to further reading.
 
 Uses **GitHub Models** (https://github.com/marketplace/models) for
-inference — no external API key is required. The workflow passes the
-automatically-available ``GITHUB_TOKEN`` as the API key and the GitHub
-Models endpoint as the base URL.
+inference with **tool/function calling** so the model can actively explore
+the repository on demand. This agentic approach removes the single-prompt
+payload limit and allows the agent to scan the whole codebase.
 
 Required environment variables
 -------------------------------
@@ -26,14 +26,16 @@ OPENAI_BASE_URL   – Inference endpoint. Defaults to the GitHub Models
                     Override for Azure OpenAI or other compatible APIs.
 OPENAI_MODEL      – Model name. Defaults to gpt-4.1 (code-optimised, 1M
                     token context window available on GitHub Models).
-OPENAI_MAX_TOKENS – Maximum tokens in the model response. Defaults to 16384.
+OPENAI_MAX_TOKENS – Maximum tokens per model response. Defaults to 16384.
 OPENAI_TEMPERATURE – Sampling temperature (0.0–2.0). Defaults to 0.4.
+MAX_AGENT_TURNS   – Maximum tool-call rounds before aborting. Defaults to 30.
+MAX_FILE_BYTES    – Per-file read limit in bytes. Defaults to 200000.
 DRY_RUN           – Set to "true" to print the review to stdout instead
                     of creating a GitHub issue (useful for testing).
 """
 
-import os
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,23 +59,244 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-4.1"
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS") or "16384")
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE") or "0.4")
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+# Maximum number of agent turns (tool-call rounds) before aborting.
+MAX_AGENT_TURNS = int(os.environ.get("MAX_AGENT_TURNS", "30"))
+# Per-file read limit; set to 0 to disable.
+MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", "200000"))
 
-# Directories and file extensions to include in the review
-INCLUDE_EXTENSIONS = {
-    ".py", ".bicep", ".bicepparam", ".json", ".yml", ".yaml",
-    ".md", ".txt", ".toml", ".cfg", ".ini",
-}
+REPO_ROOT = Path(".")
 EXCLUDE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", "dist", "build",
 }
-# Binary or non-reviewable file types to explicitly skip
+INCLUDE_EXTENSIONS = {
+    ".py", ".bicep", ".bicepparam", ".json", ".yml", ".yaml",
+    ".md", ".txt", ".toml", ".cfg", ".ini",
+}
 EXCLUDE_EXTENSIONS = {".pdf"}
-# Per-file and total payload guards (bytes). Files exceeding the per-file
-# limit are skipped with a warning rather than truncated. Set either to 0
-# to disable the corresponding guard.
-MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", "200000"))
-MAX_TOTAL_BYTES = int(os.environ.get("MAX_TOTAL_BYTES", "2000000"))
+
+# ---------------------------------------------------------------------------
+# Tool definitions (passed to the model)
+# ---------------------------------------------------------------------------
+TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": (
+                "List the files and sub-directories inside a repository directory. "
+                "Hidden directories (e.g. .git) and common build artefact directories "
+                "are automatically excluded. Use '.' for the repository root."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Relative path from the repository root, "
+                            "e.g. '.' or 'src/optimizer'."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read the full UTF-8 content of a single file. "
+                "Returns the file content as a string. "
+                "Files larger than MAX_FILE_BYTES will return an error."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file from the repository root.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": (
+                "Case-insensitive substring search across all source files in the "
+                "repository. Returns each matching file with the line numbers and "
+                "text of every matching line. Useful for finding usages, imports, "
+                "configuration keys, etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Case-insensitive substring to search for.",
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of file extensions to restrict the search, "
+                            "e.g. [\".py\", \".yml\"]. Omit to search all source extensions."
+                        ),
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+def _resolve_path(path: str) -> Path | None:
+    """Resolve *path* safely inside REPO_ROOT.
+
+    Returns ``None`` if the resolved path escapes the repository root or is
+    otherwise invalid, so callers can return a safe error response.
+    """
+    try:
+        resolved = (REPO_ROOT / path).resolve()
+        resolved.relative_to(REPO_ROOT.resolve())
+        return resolved
+    except (ValueError, OSError):
+        return None
+
+
+def tool_list_directory(path: str) -> dict:
+    """Return files and sub-directories for *path*, excluding build artefacts."""
+    resolved = _resolve_path(path)
+    if resolved is None or not resolved.exists():
+        return {"error": f"Path '{path}' not found or is outside the repository."}
+    if not resolved.is_dir():
+        return {"error": f"'{path}' is not a directory."}
+
+    files: list[str] = []
+    dirs: list[str] = []
+    try:
+        for item in sorted(resolved.iterdir()):
+            if item.name in EXCLUDE_DIRS or item.name.startswith(".git"):
+                continue
+            rel = str(item.relative_to(REPO_ROOT))
+            if item.is_dir():
+                dirs.append(rel)
+            elif item.is_file() and item.suffix.lower() not in EXCLUDE_EXTENSIONS:
+                files.append(rel)
+    except PermissionError as exc:
+        return {"error": str(exc)}
+
+    return {"path": path, "files": files, "dirs": dirs}
+
+
+def tool_read_file(path: str) -> dict:
+    """Return the UTF-8 content of the file at *path*."""
+    resolved = _resolve_path(path)
+    if resolved is None:
+        return {"error": f"Path '{path}' is outside the repository or invalid."}
+    if not resolved.exists():
+        return {"error": f"File '{path}' not found."}
+    if not resolved.is_file():
+        return {"error": f"'{path}' is not a file."}
+
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        return {"error": str(exc)}
+
+    if MAX_FILE_BYTES and len(raw) > MAX_FILE_BYTES:
+        return {
+            "error": (
+                f"File '{path}' is {len(raw):,} bytes which exceeds the "
+                f"{MAX_FILE_BYTES:,}-byte read limit."
+            )
+        }
+
+    return {
+        "path": path,
+        "content": raw.decode("utf-8", errors="replace"),
+        "size_bytes": len(raw),
+    }
+
+
+def tool_search_files(pattern: str, extensions: list[str] | None = None) -> dict:
+    """Return lines matching *pattern* (case-insensitive) across source files."""
+    # Normalise extensions: ensure each has a leading dot (e.g. "py" → ".py").
+    if extensions:
+        exts = {
+            (e.lower() if e.startswith(".") else f".{e.lower()}")
+            for e in extensions
+        }
+    else:
+        exts = INCLUDE_EXTENSIONS
+    pattern_lower = pattern.lower()
+    results: list[dict] = []
+
+    for filepath in sorted(REPO_ROOT.rglob("*")):
+        if not filepath.is_file():
+            continue
+        if any(part in EXCLUDE_DIRS for part in filepath.parts):
+            continue
+        if filepath.suffix.lower() not in exts:
+            continue
+
+        try:
+            text = filepath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        matches = [
+            {"line": lineno, "text": line.rstrip()}
+            for lineno, line in enumerate(text.splitlines(), start=1)
+            if pattern_lower in line.lower()
+        ]
+        if matches:
+            results.append(
+                {"file": str(filepath.relative_to(REPO_ROOT)), "matches": matches}
+            )
+
+    return {
+        "pattern": pattern,
+        "total_files_matched": len(results),
+        "results": results,
+    }
+
+
+TOOL_REGISTRY = {
+    "list_directory": tool_list_directory,
+    "read_file": tool_read_file,
+    "search_files": tool_search_files,
+}
+
+
+def dispatch_tool(name: str, arguments: str) -> str:
+    """Parse *arguments* JSON, call the named tool, and return a JSON string."""
+    try:
+        kwargs = json.loads(arguments)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid JSON arguments: {exc}"})
+
+    fn = TOOL_REGISTRY.get(name)
+    if fn is None:
+        return json.dumps({"error": f"Unknown tool '{name}'."})
+
+    try:
+        result = fn(**kwargs)
+    except TypeError as exc:
+        return json.dumps({"error": f"Tool call error: {exc}"})
+
+    return json.dumps(result, ensure_ascii=False)
+
 
 # ---------------------------------------------------------------------------
 # System prompt – persona and output format
@@ -99,9 +322,29 @@ build a scalable event-driven 1D cutting-stock optimisation solution on Azure \
 using NVIDIA cuOpt. You must be encouraging and educational, treat every finding \
 as a learning opportunity, and prioritise actionability over completeness.
 
+You have access to three tools to explore the repository at will:
+- **list_directory(path)** — list files and sub-directories at a path.
+- **read_file(path)** — read the full content of a specific file.
+- **search_files(pattern, extensions?)** — search for a keyword or pattern \
+  across all source files.
+
+EXPLORATION STRATEGY
+====================
+Before writing a single word of the review, explore thoroughly:
+1. Call list_directory('.') to map the top-level project structure.
+2. Recursively list and read every relevant directory: src/, tests/, infra/, \
+   .github/, docs/, and any others you discover.
+3. Read ALL source files: Python modules, Bicep templates, workflow YAML, \
+   requirements/lock files, README, and configuration files.
+4. Use search_files to trace patterns — e.g. error handling, logging calls, \
+   environment variable usage, TODO/FIXME comments, hardcoded secrets.
+5. Be exhaustive — only stop exploring when you have read every file that \
+   could contain meaningful information for the review.
+
 OUTPUT FORMAT
 =============
-Respond in GitHub-flavoured Markdown. Structure your response exactly as follows:
+Once exploration is complete, produce a GitHub-flavoured Markdown review \
+structured exactly as follows:
 
 ## Executive Summary
 A concise 2–4 sentence overview of the project's current state and overall \
@@ -136,84 +379,8 @@ A brief, genuine motivating note for the contributor.
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# GitHub helpers
 # ---------------------------------------------------------------------------
-
-def read_repo_files() -> dict[str, str]:
-    """Walk the repository and return a mapping of path → content.
-
-    Files are skipped (not truncated) when they exceed MAX_FILE_BYTES, or
-    when the cumulative payload would exceed MAX_TOTAL_BYTES.  Both guards
-    can be disabled by setting the corresponding env-var to ``0``.
-    """
-    files: dict[str, str] = {}
-    total_bytes = 0
-    repo_root = Path(".")
-
-    for filepath in sorted(repo_root.rglob("*")):
-        if not filepath.is_file():
-            continue
-        if any(part in EXCLUDE_DIRS for part in filepath.parts):
-            continue
-        if filepath.suffix.lower() in EXCLUDE_EXTENSIONS:
-            continue
-        if filepath.suffix.lower() not in INCLUDE_EXTENSIONS:
-            continue
-
-        try:
-            raw = filepath.read_bytes()
-        except OSError:
-            continue
-
-        if MAX_FILE_BYTES and len(raw) > MAX_FILE_BYTES:
-            print(
-                f"[agent] Skipping {filepath} — {len(raw):,} bytes exceeds "
-                f"MAX_FILE_BYTES ({MAX_FILE_BYTES:,}).",
-                file=sys.stderr,
-            )
-            continue
-
-        if MAX_TOTAL_BYTES and total_bytes + len(raw) > MAX_TOTAL_BYTES:
-            print(
-                f"[agent] Skipping {filepath} — would exceed total payload "
-                f"limit MAX_TOTAL_BYTES ({MAX_TOTAL_BYTES:,}).",
-                file=sys.stderr,
-            )
-            continue
-
-        content = raw.decode("utf-8", errors="replace")
-        files[str(filepath)] = content
-        total_bytes += len(raw)
-
-    print(
-        f"[agent] Collected {len(files)} files ({total_bytes:,} bytes).",
-        file=sys.stderr,
-    )
-    return files
-
-
-def _safe_fence(content: str) -> str:
-    """Return the shortest tilde fence that does not appear in *content*."""
-    fence = "~~~"
-    while fence in content:
-        fence += "~"
-    return fence
-
-
-def build_files_section(files: dict[str, str]) -> str:
-    """Render repository files as a Markdown code-fenced section.
-
-    Uses tilde fences (``~~~``) with a dynamically extended length so that
-    file content containing backtick fences never corrupts the prompt
-    structure.
-    """
-    parts: list[str] = []
-    for path, content in files.items():
-        lang = Path(path).suffix.lstrip(".") or "text"
-        fence = _safe_fence(content)
-        parts.append(f"### `{path}`\n\n{fence}{lang}\n{content}\n{fence}\n")
-    return "\n".join(parts)
-
 
 def get_open_issues(repo) -> list[dict]:
     """Return open issues as plain dicts (excludes PRs and code-review issues).
@@ -265,56 +432,6 @@ def find_existing_issue(repo, title: str) -> Issue | None:
     return None
 
 
-def generate_review(files: dict[str, str], issues: list[dict]) -> str:
-    """Call the GitHub Models API and return the Markdown review."""
-    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    issues_json = json.dumps(issues, indent=2, ensure_ascii=False)
-    files_section = build_files_section(files)
-
-    user_message = f"""\
-Today's date: {today}
-
----
-
-## Project Plan — GitHub Issues (open)
-
-```json
-{issues_json}
-```
-
----
-
-## Repository File Contents
-
-{files_section}
-
----
-
-Please produce a thorough code review and project-progress assessment following \
-your instructions exactly.
-"""
-
-    print(f"[agent] Sending request to model '{OPENAI_MODEL}' …", file=sys.stderr)
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        max_tokens=OPENAI_MAX_TOKENS,
-        temperature=OPENAI_TEMPERATURE,
-    )
-    content = response.choices[0].message.content
-    if not content:
-        raise RuntimeError(
-            "The model returned an empty response. "
-            "Try increasing OPENAI_MAX_TOKENS or check your API quota."
-        )
-    return content
-
-
 def create_github_issue(repo, title: str, body: str) -> str:
     """Create a GitHub issue and return its URL."""
     ensure_label(
@@ -328,14 +445,126 @@ def create_github_issue(repo, title: str, body: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Agent loop
+# ---------------------------------------------------------------------------
+
+def run_agent(issues: list[dict]) -> str:
+    """Run the agentic code-review loop and return the Markdown review text.
+
+    The agent is given tool access to explore the repository freely.  It
+    iterates until it stops calling tools and returns a final answer, or
+    until MAX_AGENT_TURNS is reached.
+    """
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    issues_json = json.dumps(issues, indent=2, ensure_ascii=False)
+
+    initial_user_message = f"""\
+Today's date: {today}
+
+## Project Plan — GitHub Issues (open)
+
+```json
+{issues_json}
+```
+
+Please start by exploring the repository structure using the available tools, \
+then thoroughly review the codebase and produce a complete code review and \
+project-progress assessment following your instructions exactly.
+"""
+
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": initial_user_message},
+    ]
+
+    print(
+        f"[agent] Starting agent loop (max {MAX_AGENT_TURNS} turns) …",
+        file=sys.stderr,
+    )
+
+    for turn in range(1, MAX_AGENT_TURNS + 1):
+        print(
+            f"[agent] Turn {turn}: calling model '{OPENAI_MODEL}' …",
+            file=sys.stderr,
+        )
+
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
+            max_tokens=OPENAI_MAX_TOKENS,
+            temperature=OPENAI_TEMPERATURE,
+        )
+
+        assistant_message = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
+
+        # Append assistant turn; serialise tool_calls explicitly for clarity.
+        msg_dict: dict[str, object] = {"role": "assistant", "content": assistant_message.content}
+        if assistant_message.tool_calls:
+            msg_dict["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in assistant_message.tool_calls
+            ]
+        messages.append(msg_dict)
+
+        if finish_reason == "tool_calls" and assistant_message.tool_calls:
+            for tc in assistant_message.tool_calls:
+                tool_name = tc.function.name
+                tool_args = tc.function.arguments
+                preview = tool_args[:120].replace("\n", " ")
+                print(
+                    f"[agent]   → tool call: {tool_name}({preview})",
+                    file=sys.stderr,
+                )
+                result_str = dispatch_tool(tool_name, tool_args)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_str,
+                    }
+                )
+
+        elif finish_reason == "stop":
+            content = assistant_message.content
+            if not content:
+                raise RuntimeError(
+                    "The model returned an empty response. "
+                    "Try increasing OPENAI_MAX_TOKENS or check your API quota."
+                )
+            print(
+                f"[agent] Agent completed after {turn} turn(s).",
+                file=sys.stderr,
+            )
+            return content
+
+        else:
+            raise RuntimeError(
+                f"Unexpected finish_reason '{finish_reason}' on turn {turn}."
+            )
+
+    raise RuntimeError(
+        f"Agent did not produce a final review within {MAX_AGENT_TURNS} turns. "
+        "Try increasing MAX_AGENT_TURNS."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print("[agent] Reading repository files …", file=sys.stderr)
-    files = read_repo_files()
-    print(f"[agent] Collected {len(files)} files.", file=sys.stderr)
-
     gh = Github(GITHUB_TOKEN)
     repo = gh.get_repo(GITHUB_REPOSITORY)
 
@@ -343,12 +572,12 @@ def main() -> None:
     issues = get_open_issues(repo)
     print(f"[agent] Found {len(issues)} open issues.", file=sys.stderr)
 
-    review_markdown = generate_review(files, issues)
+    review_markdown = run_agent(issues)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     issue_title = f"{today} code review"
 
-    # Prepend a header so the issue body is self-contained
+    # Prepend a header so the issue body is self-contained.
     issue_body = (
         f"# {issue_title}\n\n"
         f"*Generated by the [Weekly Code Review Agent]"
@@ -370,7 +599,10 @@ def main() -> None:
                 file=sys.stderr,
             )
         else:
-            print(f"[agent] Creating GitHub issue '{issue_title}' …", file=sys.stderr)
+            print(
+                f"[agent] Creating GitHub issue '{issue_title}' …",
+                file=sys.stderr,
+            )
             url = create_github_issue(repo, issue_title, issue_body)
             print(f"[agent] Issue created: {url}", file=sys.stderr)
 

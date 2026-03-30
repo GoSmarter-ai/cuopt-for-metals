@@ -44,6 +44,9 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS }}
           OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE }}
+          # Maximum number of tool-call rounds the agent may take.
+          # Increase if the agent hits the limit on large codebases.
+          MAX_AGENT_TURNS: ${{ vars.MAX_AGENT_TURNS }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: python .github/scripts/code_review_agent.py
