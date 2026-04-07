@@ -1,0 +1,10 @@
+{
+  "job_id": "job-hard",
+  "stock_length_mm": 6000,
+  "orders": [
+    { "length_mm": 2300, "quantity": 5 },
+    { "length_mm": 1700, "quantity": 4 },
+    { "length_mm": 900, "quantity": 6 }
+  ],
+  "metadata": {}
+}

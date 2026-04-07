@@ -1,0 +1,11 @@
+{
+  "job_id": "job-simple",
+  "stock_length_mm": 6000,
+  "orders": [
+    { "length_mm": 2000, "quantity": 2 },
+    { "length_mm": 1500, "quantity": 1 }
+  ],
+  "metadata": {}
+}
+
+

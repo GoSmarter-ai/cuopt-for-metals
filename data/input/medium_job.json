@@ -1,0 +1,10 @@
+{
+  "job_id": "job-medium",
+  "stock_length_mm": 6000,
+  "orders": [
+    { "length_mm": 2400, "quantity": 3 },
+    { "length_mm": 1800, "quantity": 2 },
+    { "length_mm": 1200, "quantity": 4 }
+  ],
+  "metadata": {}
+}
