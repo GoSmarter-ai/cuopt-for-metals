@@ -322,7 +322,6 @@ def main() -> None:
         raw = fh.read()
 
     # Parse and validate early so we can print the input summary before solving
-    import math
     job = parse_message(raw)
     errors = validate_job(job)
     if errors:
@@ -364,10 +363,10 @@ def main() -> None:
     c = result["cuopt_result"]
     print()
     print("=" * 52)
-    print(f"  cuOpt for Metals — Cutting Stock Results")
+    print("  cuOpt for Metals — Cutting Stock Results")
     print("=" * 52)
     print(f"  Job ID        : {result['job_id']}")
-    print(f"  Validation    : PASSED")
+    print("  Validation    : PASSED")
     print(f"  Total pieces  : {result['total_pieces']}")
     print(f"  Total demand  : {result['total_demand_mm']} mm")
     print(f"  Stock length  : {result['stock_length_mm']} mm")
