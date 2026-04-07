@@ -1,0 +1,1 @@
+{"job_id":"test-001","stock_length_mm":6000,"orders":[{"length_mm":2400,"quantity":3},{"length_mm":1800,"quantity":5}],"metadata":{"source":"local-test"}}
