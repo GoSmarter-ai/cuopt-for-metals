@@ -281,5 +281,73 @@ class TestServiceBusErrors(unittest.TestCase):
         self.assertEqual(resp.status_code, 500)
 
 
+# 6. validate_job() unit tests – exercise validation.py directly so its
+#    lines are counted by the coverage gate.
+
+from validation import validate_job  # noqa: E402  (sys.path set above)
+
+
+class TestValidateJob(unittest.TestCase):
+
+    def test_valid_payload_returns_no_errors(self):
+        errors = validate_job({
+            "stock_length_mm": 6000,
+            "orders": [{"length_mm": 2400, "quantity": 3}],
+        })
+        self.assertEqual(errors, [])
+
+    def test_missing_orders_field(self):
+        errors = validate_job({"stock_length_mm": 6000})
+        self.assertIn("Missing required field: 'orders'", errors)
+
+    def test_empty_orders_list(self):
+        errors = validate_job({"orders": []})
+        self.assertTrue(any("non-empty" in e for e in errors))
+
+    def test_missing_length_mm(self):
+        errors = validate_job({"orders": [{"quantity": 2}]})
+        self.assertTrue(any("length_mm" in e for e in errors))
+
+    def test_invalid_length_mm_zero(self):
+        errors = validate_job({"orders": [{"length_mm": 0, "quantity": 1}]})
+        self.assertTrue(any("length_mm" in e for e in errors))
+
+    def test_invalid_length_mm_negative(self):
+        errors = validate_job({"orders": [{"length_mm": -10, "quantity": 1}]})
+        self.assertTrue(any("length_mm" in e for e in errors))
+
+    def test_missing_quantity(self):
+        errors = validate_job({"orders": [{"length_mm": 1000}]})
+        self.assertTrue(any("quantity" in e for e in errors))
+
+    def test_invalid_quantity_float(self):
+        errors = validate_job({"orders": [{"length_mm": 1000, "quantity": 1.5}]})
+        self.assertTrue(any("quantity" in e for e in errors))
+
+    def test_invalid_quantity_zero(self):
+        errors = validate_job({"orders": [{"length_mm": 1000, "quantity": 0}]})
+        self.assertTrue(any("quantity" in e for e in errors))
+
+    def test_invalid_stock_length_negative(self):
+        errors = validate_job({
+            "stock_length_mm": -100,
+            "orders": [{"length_mm": 1000, "quantity": 1}],
+        })
+        self.assertTrue(any("stock_length_mm" in e for e in errors))
+
+    def test_invalid_stock_length_zero(self):
+        errors = validate_job({
+            "stock_length_mm": 0,
+            "orders": [{"length_mm": 1000, "quantity": 1}],
+        })
+        self.assertTrue(any("stock_length_mm" in e for e in errors))
+
+    def test_multiple_errors_reported_together(self):
+        errors = validate_job({"orders": [{"length_mm": -1, "quantity": -1}]})
+        combined = " ".join(errors)
+        self.assertIn("length_mm", combined)
+        self.assertIn("quantity", combined)
+
+
 if __name__ == "__main__":
     unittest.main()
